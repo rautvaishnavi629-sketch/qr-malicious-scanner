@@ -16,7 +16,6 @@ def check_url(url):
 
     is_payment_qr = url_lower.startswith("upi://pay")
 
-    # HTTPS / HTTP Check
     if parsed.scheme == "http":
         score += 20
         factors.append("HTTP instead of HTTPS")
@@ -25,7 +24,7 @@ def check_url(url):
     elif parsed.scheme == "https":
         factors.append("HTTPS used")
 
-    elif parsed.scheme == "upi" and is_payment_qr:
+    elif is_payment_qr:
         factors.append("UPI payment QR detected")
 
     elif parsed.scheme:
@@ -42,7 +41,6 @@ def check_url(url):
             False
         )
 
-    # Suspicious Keyword Check
     suspicious_words = [
         "login",
         "verify",
@@ -65,7 +63,6 @@ def check_url(url):
     if not found_keyword:
         factors.append("No suspicious keyword")
 
-    # @ Symbol Check
     if "@" in url:
         score += 20
         factors.append("@ symbol detected")
@@ -73,7 +70,6 @@ def check_url(url):
     else:
         factors.append("No @ symbol")
 
-    # URL Length Check
     if len(url) > 150:
         score += 15
         factors.append("Unusually long URL")
@@ -81,36 +77,24 @@ def check_url(url):
     else:
         factors.append("Normal URL length")
 
-    # Domain Checks
     hostname = parsed.hostname
 
     if hostname:
         parts = hostname.split(".")
 
-        # IP Address Check
-        if len(parts) == 4 and all(
-            part.isdigit() for part in parts
-        ):
+        if len(parts) == 4 and all(part.isdigit() for part in parts):
             score += 15
             factors.append("IP address used")
-            reasons.append(
-                "URL uses an IP address instead of a domain name"
-            )
+            reasons.append("URL uses an IP address instead of a domain name")
         else:
             factors.append("Normal domain format")
 
-        # Punycode / Encoded Domain Check
         if "xn--" in hostname:
             score += 10
             factors.append("Unusual encoded domain")
-            reasons.append(
-                "Domain contains an unusual encoded name"
-            )
+            reasons.append("Domain contains an unusual encoded name")
 
-        # Subdomain Check
-        domain_parts = hostname.split(".")
-
-        if len(domain_parts) > 4:
+        if len(parts) > 4:
             score += 10
             factors.append("Many subdomains")
             reasons.append(
@@ -121,7 +105,6 @@ def check_url(url):
 
     score = min(score, 100)
 
-    # Threat Classification
     if score >= 60:
         result = "MALICIOUS"
     elif score >= 30:
@@ -142,97 +125,65 @@ def home():
 
 @app.route("/scan", methods=["POST"])
 def scan():
+    if "qr_image" not in request.files:
+        return jsonify({
+            "success": False,
+            "error": "No QR image uploaded."
+        }), 400
 
-    file = request.files.get("qr_image")
+    file = request.files["qr_image"]
 
-    if not file:
-        return render_template(
-            "index.html",
-            error="Please select a QR image."
+    if file.filename == "":
+        return jsonify({
+            "success": False,
+            "error": "Please select a QR code image."
+        }), 400
+
+    try:
+        image_bytes = file.read()
+
+        image_array = np.frombuffer(image_bytes, np.uint8)
+
+        image = cv2.imdecode(
+            image_array,
+            cv2.IMREAD_COLOR
         )
 
-    data = file.read()
+        if image is None:
+            return jsonify({
+                "success": False,
+                "error": "Unable to read the uploaded image."
+            }), 400
 
-    image = cv2.imdecode(
-        np.frombuffer(data, np.uint8),
-        cv2.IMREAD_COLOR
-    )
+        detector = cv2.QRCodeDetector()
 
-    if image is None:
-        return render_template(
-            "index.html",
-            error="Invalid image."
+        decoded_data, points, _ = detector.detectAndDecode(image)
+
+        if not decoded_data:
+            return jsonify({
+                "success": False,
+                "error": "No QR code detected. Please upload a clear QR image."
+            }), 400
+
+        result, score, reasons, factors, is_payment_qr = check_url(
+            decoded_data
         )
 
-    detector = cv2.QRCodeDetector()
+        return jsonify({
+            "success": True,
+            "decoded_data": decoded_data,
+            "result": result,
+            "score": score,
+            "reasons": reasons,
+            "factors": factors,
+            "is_payment_qr": is_payment_qr
+        })
 
-    decoded_url, points, _ = detector.detectAndDecode(image)
-
-    if not decoded_url:
-        return render_template(
-            "index.html",
-            error="No QR code could be detected."
-        )
-
-    result, score, reasons, factors, is_payment_qr = check_url(
-        decoded_url
-    )
-
-    payment_warning = is_payment_qr and score >= 30
-
-    return render_template(
-        "index.html",
-        decoded_url=decoded_url,
-        result=result,
-        score=score,
-        reasons=reasons,
-        factors=factors,
-        is_payment_qr=is_payment_qr,
-        payment_warning=payment_warning
-    )
-
-
-@app.route("/scan_camera", methods=["POST"])
-def scan_camera():
-
-    file = request.files.get("frame")
-
-    if not file:
-        return jsonify({"found": False})
-
-    data = file.read()
-
-    image = cv2.imdecode(
-        np.frombuffer(data, np.uint8),
-        cv2.IMREAD_COLOR
-    )
-
-    if image is None:
-        return jsonify({"found": False})
-
-    detector = cv2.QRCodeDetector()
-
-    decoded_url, points, _ = detector.detectAndDecode(image)
-
-    if not decoded_url:
-        return jsonify({"found": False})
-
-    result, score, reasons, factors, is_payment_qr = check_url(
-        decoded_url
-    )
-
-    payment_warning = is_payment_qr and score >= 30
-
-    return jsonify({
-        "found": True,
-        "decoded_url": decoded_url,
-        "result": result,
-        "score": score,
-        "reasons": reasons,
-        "factors": factors,
-        "is_payment_qr": is_payment_qr,
-        "payment_warning": payment_warning
-    })
+    except Exception:
+        return jsonify({
+            "success": False,
+            "error": "An error occurred while scanning the QR code."
+        }), 500
 
 
 if __name__ == "__main__":
